@@ -47,12 +47,15 @@ EdAi_project/
 ```
 
 ## Running on Kaggle
-Easiest: upload `notebooks/edai_malaria_kaggle.ipynb` (self-contained; it writes `src/` itself).
-Regenerate it after editing `src/`: `python notebooks/build_notebook.py`.
+**Run `notebooks/edai_malaria_kaggle.ipynb`.** It clones this repo, so Kaggle always uses the latest pushed code.
 
-Or from the repo:
-```python
-!git clone https://github.com/<your-username>/EdAi_project.git
-%cd EdAi_project
-!python src/data_prep.py --data_root /kaggle/input/cell-images-for-detecting-malaria/cell_images
-```
+1. Kaggle → File → Import Notebook → `notebooks/edai_malaria_kaggle.ipynb`
+2. Add Input → *Malaria Cell Images Dataset* (iarunava)
+3. Settings → Accelerator **GPU**, Internet **On**
+4. Run All → download `edai_outputs.zip` from Output
+
+Workflow: edit `src/` on the laptop → `git push` → re-run the notebook on Kaggle.
+Private repo: add a Kaggle secret `GITHUB_TOKEN` (GitHub personal access token, read access).
+
+Backup: `notebooks/edai_malaria_kaggle_standalone.ipynb` has all code embedded and needs no GitHub.
+After editing `src/`, regenerate both notebooks with `python notebooks/build_notebook.py`.
