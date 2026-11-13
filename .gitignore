@@ -1,0 +1,17 @@
+# Data and large files (never commit these)
+data/
+*.zip
+outputs/
+*.pth
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS
+Thumbs.db
+.DS_Store

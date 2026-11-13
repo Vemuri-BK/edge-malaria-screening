@@ -1,0 +1,13 @@
+# Training / evaluation (Kaggle already has most of these)
+torch
+torchvision
+numpy
+pandas
+pillow
+scikit-learn
+matplotlib
+tqdm
+
+# Export + quantization
+onnx
+onnxruntime
