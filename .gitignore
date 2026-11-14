@@ -19,3 +19,6 @@ Thumbs.db
 # LLM model files
 models/
 *.gguf
+
+# llama.cpp Windows tools (downloaded)
+tools/
