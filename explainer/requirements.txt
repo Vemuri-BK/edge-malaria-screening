@@ -1,0 +1,5 @@
+# LLM explainer (laptop or Raspberry Pi)
+llama-cpp-python      # runs GGUF models (llama.cpp)
+huggingface_hub       # downloads GGUF files
+psutil
+numpy

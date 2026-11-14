@@ -123,6 +123,7 @@ def fit(model, loaders, out_dir, epochs=C.EPOCHS, lr=C.LR, weight_decay=C.WEIGHT
             "proc_rss_max_mb": sysm.get("proc_rss_mb_max"),
         }
         history.append(row)
+        pd.DataFrame(history).to_csv(out_dir / "history.csv", index=False)   # saved every epoch
 
         flag = ""
         if m["auroc"] > best_auroc:
@@ -134,7 +135,8 @@ def fit(model, loaders, out_dir, epochs=C.EPOCHS, lr=C.LR, weight_decay=C.WEIGHT
               f"auroc {m['auroc']:.4f} | {epoch_time:.0f}s {row['train_throughput_img_s']:.0f} img/s{flag}")
 
     hist = pd.DataFrame(history)
-    hist.to_csv(out_dir / "history.csv", index=False)
+    if len(hist) == epochs:
+        (out_dir / "COMPLETE").write_text("training finished\n")
     model.load_state_dict(torch.load(out_dir / "best_model.pth", map_location=device))
     return model, hist
 

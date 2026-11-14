@@ -30,7 +30,8 @@ with LEDs (green = negative, red = positive, yellow = unsure).
 | 10 | `src/compress.py` | Unstructured + structured (channel) pruning, FLOPs/params, sparsity | Kaggle |
 | 11 | `src/study.py` | Evaluate every lightweight variant identically; deployment rule | Kaggle |
 | 12 | `pi/` | Benchmark on laptop/Pi; single LED (ON = Parasitized), system monitoring | Raspberry Pi |
-| 13 | report | Tables, plots, demo | — |
+| 13 | `explainer/` | LLM explainer: small GGUF model explains the result, with safety checks + template fallback | Laptop / Pi |
+| 14 | report | Tables, plots, demo | — |
 
 ## Dataset
 NIH Malaria Cell Images (27,558 cells, 200 patients: 150 infected, 50 uninfected).
@@ -58,7 +59,10 @@ EdAi_project/
 | `notebooks/study_mobilenet_v2.ipynb` | `study_mobilenet_v2` | ImageNet | 15 + fine-tunes | `edai_study_mobilenet_v2.zip` |
 | `notebooks/study_resnet18.ipynb` | `study_resnet18` | ImageNet | 15 + fine-tunes | `edai_study_resnet18.zip` |
 
-**Compression study** (one notebook per architecture): FP32, INT8 (minmax, percentile),
+| `notebooks/study_scratch_tiny_cnn.ipynb` | `study_tiny_cnn_scratch` | random (our TinyCNN, 0.29 M params) | 100 + fine-tunes | `edai_study_tiny_cnn_scratch.zip` |
+| `notebooks/study_scratch_<arch>.ipynb` (3 more) | `study_<arch>_scratch` | random | 100 + fine-tunes | `edai_study_<arch>_scratch.zip` |
+
+**Compression study** (one notebook per architecture; `study_scratch_*` = trained from scratch): FP32, INT8 (minmax, percentile),
 unstructured pruning 50%, structured pruning 30% / 50%, and pruning + INT8 combined.
 Each variant is calibrated on validation and tested on unseen patients; all ONNX files are
 saved with a `deploy_config.json` so `pi/benchmark.py` can test every variant on the Pi.
@@ -85,3 +89,18 @@ python pi/benchmark.py --deploy outputs/deploy_pretrained outputs/deploy_scratch
 Without `--data_root/--split_csv` it uses the 20 demo images in each deploy folder.
 Writes `results/benchmark_<device>.csv`: accuracy, sensitivity, specificity, AUROC, ECE,
 model size, load time, RAM, latency (mean/p50/p95), FPS, end-to-end time, CPU %, CPU temperature.
+
+## LLM explainer (Phase 3)
+The CNN decides; a small quantized LLM (GGUF, llama.cpp) only **explains** the result in 2-3 sentences.
+Every explanation is checked (correct result, correct confidence, no diagnosis/medicine claims,
+referral to a technician/doctor, short). If a check fails, a fixed template sentence is shown instead.
+
+```
+pip install -r explainer/requirements.txt
+python explainer/download_models.py --plan quick        # Qwen3-0.6B Q4_K_M (~0.5 GB)
+python explainer/explain.py --model models/Qwen_Qwen3-0.6B-Q4_K_M.gguf --prob 0.97
+python explainer/download_models.py --plan core         # 5 quantization levels + 2 other 1B models
+python explainer/benchmark_llm.py --models "models/*.gguf" --cases 40
+```
+The benchmark writes `results/llm_benchmark_<device>.csv` (quality + speed + RAM + temperature per model)
+and `results/llm_outputs_<device>.jsonl` (every explanation, for examples in the report).

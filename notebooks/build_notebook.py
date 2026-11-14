@@ -453,7 +453,7 @@ def build(mode, filename, exp):
 # COMPRESSION STUDY notebooks (one per architecture)
 # ======================================================================
 STUDY_INTRO = """
-# EdAi Project — Compression study: **{arch}**
+# EdAi Project — Compression study: **{arch}** ({init})
 
 Which lightweight method keeps a malaria screener **clinically safe** on a Raspberry Pi?
 
@@ -472,11 +472,11 @@ Model metrics **and** system metrics are recorded; all ONNX files are saved for 
 """
 
 STUDY_SETTINGS = """
-EXP = "study_{arch}"
+EXP = "study_{arch}{tag}"
 C.ARCH = "{arch}"
-C.PRETRAINED = True
+C.PRETRAINED = {pretrained}   # False = trained from scratch (random initial weights)
 C.EPOCHS = {epochs}           # baseline training
-C.LR = 1e-3
+C.LR = {lr}
 FT_EPOCHS = 5                 # fine-tuning after pruning
 UNSTRUCTURED_AMOUNT = 0.5     # fraction of weights set to zero
 STRUCTURED_RATIOS = [0.3, 0.5]  # fraction of channels removed
@@ -488,7 +488,7 @@ print(f"{{EXP}}: baseline {{C.EPOCHS}} epochs, fine-tune {{FT_EPOCHS}} epochs af
 """
 
 
-def study_cells(arch, epochs):
+def study_cells(arch, epochs, pretrained=True, lr=1e-3, tag=""):
     md("## 1. Imports, extra packages, system information")
     code(r"""
     try:
@@ -518,7 +518,7 @@ def study_cells(arch, epochs):
     """)
 
     md("## 2. Study settings")
-    code(STUDY_SETTINGS.format(arch=arch, epochs=epochs))
+    code(STUDY_SETTINGS.format(arch=arch, epochs=epochs, pretrained=pretrained, lr=lr, tag=tag))
 
     md("## 3. Data: patient-level split + images cached in RAM\nDecoding PNGs was the training bottleneck (GPU ~15% busy). Each image is decoded and resized once; pixels are identical to the Pi's preprocessing.")
     code(r"""
@@ -536,12 +536,12 @@ def study_cells(arch, epochs):
     Xcal = cache_to_input(caches["train"][np.random.default_rng(C.SEED).choice(len(caches["train"]), C.CALIB_IMAGES, replace=False)])
     """)
 
-    md("## 4. Baseline FP32 model\nRe-uses `baseline/best_model.pth` if it already exists (e.g. after a kernel restart).")
+    md("## 4. Baseline FP32 model\nRe-uses the baseline only if a previous training run **finished** (e.g. after a kernel restart); an interrupted run is trained again.")
     code(r"""
     base_dir = os.path.join(OUT, "baseline")
     model = EdgeClassifier(C.ARCH, pretrained=C.PRETRAINED)
     ckpt = os.path.join(base_dir, "best_model.pth")
-    if os.path.exists(ckpt):
+    if os.path.exists(os.path.join(base_dir, "COMPLETE")):
         model.load_state_dict(torch.load(ckpt, map_location="cpu"))
         hist = pd.read_csv(os.path.join(base_dir, "history.csv"))
         print("Loaded existing baseline")
@@ -675,10 +675,11 @@ def study_cells(arch, epochs):
     """)
 
 
-def build_study(arch, filename, epochs=15):
+def build_study(arch, filename, epochs=15, pretrained=True, lr=1e-3, tag=""):
     cells.clear()
-    github_setup(STUDY_INTRO.format(arch=arch))
-    study_cells(arch, epochs)
+    init = "ImageNet-pretrained" if pretrained else f"trained from scratch, {epochs} epochs"
+    github_setup(STUDY_INTRO.format(arch=arch, init=init))
+    study_cells(arch, epochs, pretrained, lr, tag)
     nb = nbf.v4.new_notebook()
     nb["cells"] = list(cells)
     nb["metadata"] = {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
@@ -694,3 +695,6 @@ if __name__ == "__main__":
     build("standalone", "edai_malaria_kaggle_standalone.ipynb", PRETRAINED_EXP)
     for arch in ("mobilenet_v3_small", "mobilenet_v2", "resnet18"):
         build_study(arch, f"study_{arch}.ipynb")
+    # From-scratch studies (supervisor's requirement): our TinyCNN + the same 3 architectures
+    for arch in ("tiny_cnn", "mobilenet_v3_small", "mobilenet_v2", "resnet18"):
+        build_study(arch, f"study_scratch_{arch}.ipynb", epochs=100, pretrained=False, lr=3e-3, tag="_scratch")
