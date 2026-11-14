@@ -43,6 +43,7 @@ def set_seed(seed: int = C.SEED):
 @torch.no_grad()
 def predict_logits(model, loader, device):
     """Run the model over a loader; return (logits [N,2], labels [N], mean loss)."""
+    model.to(device)          # works even if the model was loaded on the CPU
     model.eval()
     crit = nn.CrossEntropyLoss(reduction="sum")
     all_logits, all_labels, total_loss = [], [], 0.0

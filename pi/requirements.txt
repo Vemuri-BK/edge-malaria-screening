@@ -1,0 +1,5 @@
+# Inference-only dependencies (laptop or Raspberry Pi) - no PyTorch needed
+numpy
+pillow
+onnxruntime
+psutil

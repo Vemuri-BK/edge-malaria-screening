@@ -27,8 +27,10 @@ with LEDs (green = negative, red = positive, yellow = unsure).
 | 7 | `src/export_onnx.py` | Export to ONNX, check PyTorch = ONNX | Kaggle |
 | 8 | `src/quantize.py` | INT8 static quantization (ONNX Runtime) | Kaggle |
 | 9 | `src/evaluate.py` | ONNX evaluation (same as Pi) + latency benchmark | Kaggle |
-| 10 | `pi/` | Pi inference, single LED (ON = Parasitized), system monitoring | Raspberry Pi |
-| 11 | report | Tables, plots, demo | — |
+| 10 | `src/compress.py` | Unstructured + structured (channel) pruning, FLOPs/params, sparsity | Kaggle |
+| 11 | `src/study.py` | Evaluate every lightweight variant identically; deployment rule | Kaggle |
+| 12 | `pi/` | Benchmark on laptop/Pi; single LED (ON = Parasitized), system monitoring | Raspberry Pi |
+| 13 | report | Tables, plots, demo | — |
 
 ## Dataset
 NIH Malaria Cell Images (27,558 cells, 200 patients: 150 infected, 50 uninfected).
@@ -46,16 +48,40 @@ EdAi_project/
 └── data/         # local dataset copy (not committed)
 ```
 
-## Running on Kaggle
-**Run `notebooks/edai_malaria_kaggle.ipynb`.** It clones this repo, so Kaggle always uses the latest pushed code.
+## Experiments (one Kaggle notebook each)
+| Notebook | Experiment | Init | Epochs | Outputs |
+|---|---|---|---|---|
+| `notebooks/edai_malaria_kaggle.ipynb` | `pretrained` | ImageNet | 15 | `edai_outputs_pretrained.zip` |
+| `notebooks/edai_malaria_kaggle_scratch.ipynb` | `scratch` | random | 100 | `edai_outputs_scratch.zip` |
 
-1. Kaggle → File → Import Notebook → `notebooks/edai_malaria_kaggle.ipynb`
+| `notebooks/study_mobilenet_v3_small.ipynb` | `study_mobilenet_v3_small` | ImageNet | 15 + fine-tunes | `edai_study_mobilenet_v3_small.zip` |
+| `notebooks/study_mobilenet_v2.ipynb` | `study_mobilenet_v2` | ImageNet | 15 + fine-tunes | `edai_study_mobilenet_v2.zip` |
+| `notebooks/study_resnet18.ipynb` | `study_resnet18` | ImageNet | 15 + fine-tunes | `edai_study_resnet18.zip` |
+
+**Compression study** (one notebook per architecture): FP32, INT8 (minmax, percentile),
+unstructured pruning 50%, structured pruning 30% / 50%, and pruning + INT8 combined.
+Each variant is calibrated on validation and tested on unseen patients; all ONNX files are
+saved with a `deploy_config.json` so `pi/benchmark.py` can test every variant on the Pi.
+
+All notebooks pull the code from this repo. `edai_malaria_kaggle_standalone.ipynb` is a backup of the
+pretrained run with all code embedded (no GitHub needed).
+After editing `src/`, regenerate the notebooks: `python notebooks/build_notebook.py`.
+
+## Running on Kaggle
+1. Kaggle → File → Import Notebook → one of the notebooks above
 2. Add Input → *Malaria Cell Images Dataset* (iarunava)
 3. Settings → Accelerator **GPU**, Internet **On**
-4. Run All → download `edai_outputs.zip` from Output
+4. Run All → download the zip from Output, extract it into `outputs/` on the laptop
 
 Workflow: edit `src/` on the laptop → `git push` → re-run the notebook on Kaggle.
 Private repo: add a Kaggle secret `GITHUB_TOKEN` (GitHub personal access token, read access).
 
-Backup: `notebooks/edai_malaria_kaggle_standalone.ipynb` has all code embedded and needs no GitHub.
-After editing `src/`, regenerate both notebooks with `python notebooks/build_notebook.py`.
+## Benchmark on the laptop and the Raspberry Pi
+Same script on every device (needs only `pip install -r pi/requirements.txt`):
+```
+python pi/benchmark.py --deploy outputs/deploy_pretrained outputs/deploy_scratch \
+                       --data_root data/cell_images --split_csv splits/patient_split.csv
+```
+Without `--data_root/--split_csv` it uses the 20 demo images in each deploy folder.
+Writes `results/benchmark_<device>.csv`: accuracy, sensitivity, specificity, AUROC, ECE,
+model size, load time, RAM, latency (mean/p50/p95), FPS, end-to-end time, CPU %, CPU temperature.

@@ -33,6 +33,40 @@ def module(name, title):
     cells.append(nbf.v4.new_code_cell(f"%%writefile src/{name}\n" + (SRC / name).read_text()))
 
 
+# ----------------------------------------------------------------------
+# Experiments (each notebook = one experiment; outputs never overwrite each other)
+# ----------------------------------------------------------------------
+PRETRAINED_EXP = dict(name="pretrained", arch="mobilenet_v3_small", pretrained=True, epochs=15, lr=1e-3)
+SCRATCH_EXP = dict(name="scratch", arch="mobilenet_v3_small", pretrained=False, epochs=100, lr=3e-3)
+
+EXP_NOTE = {
+    "pretrained": """
+## Experiment settings — **pretrained** (transfer learning)
+MobileNetV3-Small starts from ImageNet weights and is fine-tuned for 15 epochs.
+Outputs go to `outputs/pretrained/` and `outputs/deploy_pretrained/`.
+""",
+    "scratch": """
+## Experiment settings — **from scratch**
+Same MobileNetV3-Small, but **random initial weights** (no ImageNet) and **100 epochs** with a higher
+learning rate. Compare with the pretrained run on: test metrics, training time (GPU cost), INT8 robustness,
+and speed on the laptop / Raspberry Pi (the architecture is identical, so speed should match - accuracy may not).
+Outputs go to `outputs/scratch/` and `outputs/deploy_scratch/`.
+""",
+}
+
+EXP_TEMPLATE = """
+EXP = "{name}"            # names the output folders: outputs/<EXP>/ and outputs/deploy_<EXP>/
+C.ARCH = "{arch}"
+C.PRETRAINED = {pretrained}
+C.EPOCHS = {epochs}
+C.LR = {lr}
+
+OUT = os.path.join(WORK, "outputs", EXP)
+DEPLOY = os.path.join(WORK, "outputs", "deploy_" + EXP)
+os.makedirs(OUT, exist_ok=True); os.makedirs(DEPLOY, exist_ok=True)
+print(f"Experiment '{{EXP}}': {{C.ARCH}}, pretrained={{C.PRETRAINED}}, epochs={{C.EPOCHS}}, lr={{C.LR}}")
+"""
+
 INTRO = """
 # EdAi Project — Malaria Screening on a Raspberry Pi (Phase 1: training on Kaggle)
 
@@ -73,8 +107,8 @@ print("Data root  :", DATA_ROOT)
 """
 
 
-def github_setup():
-    md(INTRO.format(step1="Pulls the latest project code from GitHub (`src/`, `splits/`)"))
+def github_setup(intro=None):
+    md(intro or INTRO.format(step1="Pulls the latest project code from GitHub (`src/`, `splits/`)"))
     md(f"""
 ## 0. Get the code from GitHub
 Code lives in **[{REPO_URL.removesuffix('.git')}]({REPO_URL.removesuffix('.git')})**.
@@ -147,7 +181,7 @@ GIT_COMMIT = "standalone notebook"
     module("evaluate.py", "Step 9: ONNX evaluation and latency benchmark")
 
 
-def pipeline():
+def pipeline(exp):
     """Cells shared by both notebooks (steps 1-9)."""
     md("## 2. Imports and system information")
     code(r'''
@@ -166,14 +200,13 @@ def pipeline():
     from quantize import quantize_int8
     from evaluate import make_session, onnx_predict, benchmark_latency, file_size_mb
 
-    OUT = os.path.join(WORK, "outputs", C.ARCH)
-    DEPLOY = os.path.join(WORK, "outputs", "deploy")
-    os.makedirs(OUT, exist_ok=True); os.makedirs(DEPLOY, exist_ok=True)
-
     SYS_TRAIN = system_info()
     for k, v in SYS_TRAIN.items():
         print(f"{k:20s}: {v}")
     ''')
+
+    md(EXP_NOTE[exp["name"]])
+    code(EXP_TEMPLATE.format(**exp))
 
     md("## 3. Step 1 — Data preparation (patient-level split)")
     code(r'''
@@ -218,7 +251,7 @@ def pipeline():
     code(r'''
     import time
     t_start = time.time()
-    model, hist = fit(model, loaders, OUT, epochs=C.EPOCHS)
+    model, hist = fit(model, loaders, OUT, epochs=C.EPOCHS, lr=C.LR)
     TOTAL_TRAIN_MIN = (time.time() - t_start) / 60
     print(f"\nTotal training time: {TOTAL_TRAIN_MIN:.1f} min")
     hist
@@ -294,7 +327,7 @@ def pipeline():
 
     md("## 8. Step 7 — Export to ONNX")
     code(r'''
-    FP32_ONNX = os.path.join(DEPLOY, "malaria_fp32.onnx")
+    FP32_ONNX = os.path.join(DEPLOY, "model_fp32.onnx")
     export_onnx(model, FP32_ONNX)
     print(f"Saved {FP32_ONNX}  ({file_size_mb(FP32_ONNX):.2f} MB)")
     print("Max |PyTorch - ONNX| logit difference:", check_parity(model, FP32_ONNX))
@@ -302,7 +335,7 @@ def pipeline():
 
     md("## 9. Step 8 — INT8 static quantization")
     code(r'''
-    INT8_ONNX = os.path.join(DEPLOY, "malaria_int8.onnx")
+    INT8_ONNX = os.path.join(DEPLOY, "model_int8.onnx")
     calib = parts["train"].sample(min(C.CALIB_IMAGES, len(parts["train"])), random_state=C.SEED)
     calib_paths = [os.path.join(DATA_ROOT, p) for p in calib.path]
     quantize_int8(FP32_ONNX, INT8_ONNX, calib_paths)
@@ -352,8 +385,9 @@ def pipeline():
     md("## 11. Save results and deployment files")
     code(r'''
     deploy_config = {
-        "model_fp32": "malaria_fp32.onnx",
-        "model_int8": "malaria_int8.onnx",
+        "experiment": EXP,
+        "model_fp32": "model_fp32.onnx",
+        "model_int8": "model_int8.onnx",
         "classes": C.CLASSES,
         "positive_class_index": 1,
         "img_size": C.IMG_SIZE,
@@ -364,6 +398,8 @@ def pipeline():
         "led_rule": "LED ON if softmax(logits / temperature)[1] >= led_threshold",
         "target_sensitivity": C.TARGET_SENSITIVITY,
         "arch": C.ARCH,
+        "pretrained": C.PRETRAINED,
+        "epochs": C.EPOCHS,
     }
     with open(os.path.join(DEPLOY, "deploy_config.json"), "w") as f:
         json.dump(deploy_config, f, indent=2)
@@ -377,6 +413,7 @@ def pipeline():
         os.path.join(demo_dir, "labels.csv"), index=False)
 
     summary = {
+        "experiment": EXP,
         "code_version": GIT_COMMIT,
         "system_training": SYS_TRAIN,
         "total_training_min": TOTAL_TRAIN_MIN,
@@ -390,19 +427,258 @@ def pipeline():
     onnx_results.to_csv(os.path.join(OUT, "onnx_results.csv"))
     bench.to_csv(os.path.join(OUT, "cpu_benchmark.csv"), index=False)
 
-    shutil.make_archive("/kaggle/working/edai_outputs" if ON_KAGGLE else os.path.join(WORK, "edai_outputs"),
-                        "zip", os.path.join(WORK, "outputs"))
-    print("Saved. Download edai_outputs.zip from the Output panel.")
+    zip_base = os.path.join("/kaggle/working" if ON_KAGGLE else WORK, "edai_outputs_" + EXP)
+    shutil.make_archive(zip_base, "zip", os.path.join(WORK, "outputs"))
+    print(f"Saved. Download {os.path.basename(zip_base)}.zip from the Output panel.")
     for root, _, files in os.walk(DEPLOY):
         if "demo_images" in root: continue
         for fn in files: print(" ", os.path.join(root, fn))
     ''')
 
 
-def build(mode, filename):
+def build(mode, filename, exp):
     cells.clear()
     github_setup() if mode == "github" else standalone_setup()
-    pipeline()
+    pipeline(exp)
+    nb = nbf.v4.new_notebook()
+    nb["cells"] = list(cells)
+    nb["metadata"] = {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+                      "language_info": {"name": "python"}}
+    out = ROOT / "notebooks" / filename
+    nbf.write(nb, out)
+    print("wrote", out)
+
+
+# ======================================================================
+# COMPRESSION STUDY notebooks (one per architecture)
+# ======================================================================
+STUDY_INTRO = """
+# EdAi Project — Compression study: **{arch}**
+
+Which lightweight method keeps a malaria screener **clinically safe** on a Raspberry Pi?
+
+| Variant | What it does | Expected effect on a Pi CPU |
+|---|---|---|
+| FP32 | baseline | reference |
+| INT8 (minmax / percentile) | 8-bit weights + activations (post-training) | ~4x smaller, often faster on ARM |
+| Unstructured pruning 50% | zero the smallest 50% of weights + fine-tune | smaller after gzip, **not faster** |
+| Structured pruning 30% / 50% | remove whole channels + fine-tune | fewer FLOPs → **faster** |
+| Structured pruning + INT8 | both combined | smallest + fastest (if accuracy holds) |
+
+Every variant is calibrated on validation (own temperature + LED threshold) and tested on 30 unseen patients.
+Model metrics **and** system metrics are recorded; all ONNX files are saved for the Pi benchmark.
+
+**Run with:** Add Input → *Malaria Cell Images Dataset* · GPU · Internet **On** · then **Save Version → Save & Run All**.
+"""
+
+STUDY_SETTINGS = """
+EXP = "study_{arch}"
+C.ARCH = "{arch}"
+C.PRETRAINED = True
+C.EPOCHS = {epochs}           # baseline training
+C.LR = 1e-3
+FT_EPOCHS = 5                 # fine-tuning after pruning
+UNSTRUCTURED_AMOUNT = 0.5     # fraction of weights set to zero
+STRUCTURED_RATIOS = [0.3, 0.5]  # fraction of channels removed
+
+OUT = os.path.join(WORK, "outputs", EXP)
+DEPLOY = os.path.join(WORK, "outputs", "deploy_" + EXP)
+os.makedirs(OUT, exist_ok=True); os.makedirs(DEPLOY, exist_ok=True)
+print(f"{{EXP}}: baseline {{C.EPOCHS}} epochs, fine-tune {{FT_EPOCHS}} epochs after pruning")
+"""
+
+
+def study_cells(arch, epochs):
+    md("## 1. Imports, extra packages, system information")
+    code(r"""
+    try:
+        import torch_pruning
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch-pruning"], check=True)
+
+    sys.path.insert(0, os.path.join(WORK, "src"))
+    import time
+    import numpy as np, pandas as pd, torch
+    import matplotlib.pyplot as plt
+
+    import config as C
+    from dataset import build_loaders, load_split, build_image_cache, cache_to_input
+    from models import EdgeClassifier, count_parameters
+    from sysmon import system_info
+    from train import set_seed, fit
+    from export_onnx import export_onnx, check_parity
+    from quantize import quantize_int8
+    from compress import (unstructured_prune, make_pruning_permanent, structured_prune,
+                          count_flops_params, sparsity)
+    from study import evaluate_variant, recommend
+
+    SYS_TRAIN = system_info()
+    for k, v in SYS_TRAIN.items():
+        print(f"{k:20s}: {v}")
+    """)
+
+    md("## 2. Study settings")
+    code(STUDY_SETTINGS.format(arch=arch, epochs=epochs))
+
+    md("## 3. Data: patient-level split + images cached in RAM\nDecoding PNGs was the training bottleneck (GPU ~15% busy). Each image is decoded and resized once; pixels are identical to the Pi's preprocessing.")
+    code(r"""
+    !python src/data_prep.py --data_root "{DATA_ROOT}"
+    set_seed()
+    SPLIT_CSV = os.path.join(WORK, "splits", "patient_split.csv")
+    parts = load_split(SPLIT_CSV)
+    t0 = time.time()
+    caches = {s: build_image_cache(df, DATA_ROOT) for s, df in parts.items()}
+    print(f"Cached {sum(len(c) for c in caches.values())} images in {time.time() - t0:.0f}s "
+          f"({sum(c.nbytes for c in caches.values()) / 1e9:.2f} GB)")
+    loaders, _ = build_loaders(SPLIT_CSV, DATA_ROOT, caches=caches)
+    Xv, yv = cache_to_input(caches["val"]), parts["val"].label.values
+    Xt, yt = cache_to_input(caches["test"]), parts["test"].label.values
+    Xcal = cache_to_input(caches["train"][np.random.default_rng(C.SEED).choice(len(caches["train"]), C.CALIB_IMAGES, replace=False)])
+    """)
+
+    md("## 4. Baseline FP32 model\nRe-uses `baseline/best_model.pth` if it already exists (e.g. after a kernel restart).")
+    code(r"""
+    base_dir = os.path.join(OUT, "baseline")
+    model = EdgeClassifier(C.ARCH, pretrained=C.PRETRAINED)
+    ckpt = os.path.join(base_dir, "best_model.pth")
+    if os.path.exists(ckpt):
+        model.load_state_dict(torch.load(ckpt, map_location="cpu"))
+        hist = pd.read_csv(os.path.join(base_dir, "history.csv"))
+        print("Loaded existing baseline")
+    else:
+        model, hist = fit(model, loaders, base_dir, epochs=C.EPOCHS, lr=C.LR)
+    BASE_TRAIN_MIN = hist.epoch_time_s.sum() / 60
+    print(f"Baseline training time: {BASE_TRAIN_MIN:.1f} min, best val AUROC {hist.val_auroc.max():.4f}")
+    hist[["epoch", "train_loss", "val_loss", "val_auroc", "epoch_time_s", "train_throughput_img_s", "gpu_util_mean"]].round(4)
+    """)
+
+    md("## 5. Build and evaluate every variant")
+    code(r"""
+    rows, models_cfg, train_minutes = [], {}, {"FP32": BASE_TRAIN_MIN}
+    led_ref = None
+
+    def add(name, onnx_path, torch_model=None, method=""):
+        global led_ref
+        extra = {"method": method}
+        if torch_model is not None:
+            mflops, params = count_flops_params(torch_model)
+            extra.update(params_m=params / 1e6, mflops=mflops, sparsity=sparsity(torch_model))
+        extra["extra_train_min"] = train_minutes.get(name, 0.0)
+        row, led = evaluate_variant(name, onnx_path, Xv, yv, Xt, yt, led_reference=led_ref, extra=extra)
+        if name == "FP32":
+            led_ref = led
+        rows.append(row)
+        models_cfg[name] = {"file": os.path.basename(onnx_path), "temperature": row["temperature"],
+                            "led_threshold": row["led_threshold"]}
+        print(f"{name:32s} AUROC {row['auroc']:.4f} sens {row['sensitivity']:.4f} "
+              f"FN {row['fn']:4d} FP {row['fp']:4d} | {row['onnx_mb']:.2f} MB | {row['cpu_latency_ms_1thread']:.2f} ms")
+
+    def export(m, name):
+        path = os.path.join(DEPLOY, name + ".onnx")
+        export_onnx(m, path)
+        assert check_parity(m, path) < 1e-3
+        return path
+
+    def int8(src_path, name, method="percentile"):
+        path = os.path.join(DEPLOY, name + ".onnx")
+        quantize_int8(src_path, path, Xcal, method=method)
+        return path
+
+    # --- FP32 baseline + post-training quantization
+    fp32_path = export(model, "fp32")
+    add("FP32", fp32_path, model, "baseline")
+    add("INT8 minmax", int8(fp32_path, "int8_minmax", "minmax"), method="quantization")
+    add("INT8 percentile", int8(fp32_path, "int8_percentile"), method="quantization")
+
+    # --- Unstructured pruning (+ fine-tune), then + INT8
+    t0 = time.time()
+    m_u = unstructured_prune(model, UNSTRUCTURED_AMOUNT)
+    m_u, _ = fit(m_u, loaders, os.path.join(OUT, "unstructured"), epochs=FT_EPOCHS, lr=C.LR / 10)
+    make_pruning_permanent(m_u)
+    name = f"Unstructured {int(UNSTRUCTURED_AMOUNT * 100)}%"
+    train_minutes[name] = (time.time() - t0) / 60
+    p_u = export(m_u, "unstructured")
+    add(name, p_u, m_u, "pruning")
+    add(name + " + INT8", int8(p_u, "unstructured_int8"), method="pruning + quantization")
+
+    # --- Structured channel pruning (+ fine-tune), then + INT8
+    for r in STRUCTURED_RATIOS:
+        t0 = time.time()
+        m_s = structured_prune(model, r)
+        m_s, _ = fit(m_s, loaders, os.path.join(OUT, f"structured_{int(r * 100)}"), epochs=FT_EPOCHS, lr=C.LR / 2)
+        name = f"Structured {int(r * 100)}%"
+        train_minutes[name] = (time.time() - t0) / 60
+        p_s = export(m_s, f"structured_{int(r * 100)}")
+        add(name, p_s, m_s, "pruning")
+        add(name + " + INT8", int8(p_s, f"structured_{int(r * 100)}_int8"), method="pruning + quantization")
+
+    results = pd.DataFrame(rows).set_index("variant")
+    results.to_csv(os.path.join(OUT, "study_results.csv"))
+    cols = ["method", "params_m", "mflops", "sparsity", "onnx_mb", "gzip_mb", "auroc", "accuracy",
+            "sensitivity", "specificity", "ece", "fn", "fp", "led_flips_vs_fp32", "cpu_latency_ms_1thread", "extra_train_min"]
+    results[cols].round(4)
+    """)
+
+    md("## 6. Trade-offs and deployment recommendation\nRule: among variants as safe as FP32 (sensitivity within 1 point, AUROC within 0.005), choose the fastest. **Latency here is Kaggle's x86 CPU — confirm on the Pi with `pi/benchmark.py`.**")
+    code(r"""
+    fig, ax = plt.subplots(1, 3, figsize=(18, 5))
+    for v, r in results.iterrows():
+        mk = "s" if "INT8" in v else "o"
+        ax[0].scatter(r.cpu_latency_ms_1thread, r.sensitivity, marker=mk, s=60); ax[0].annotate(v, (r.cpu_latency_ms_1thread, r.sensitivity), fontsize=8)
+        ax[1].scatter(r.onnx_mb, r.auroc, marker=mk, s=60); ax[1].annotate(v, (r.onnx_mb, r.auroc), fontsize=8)
+    ax[0].axhline(results.loc["FP32", "sensitivity"] - 0.01, ls="--", c="gray")
+    ax[0].set_xlabel("CPU latency (ms, 1 thread)"); ax[0].set_ylabel("test sensitivity"); ax[0].set_title("Safety vs speed")
+    ax[1].set_xlabel("ONNX size (MB)"); ax[1].set_ylabel("test AUROC"); ax[1].set_title("Quality vs size")
+    results["fn"].plot.barh(ax=ax[2], color="tab:red"); ax[2].set_title("Missed infections (FN) on test"); ax[2].invert_yaxis()
+    plt.tight_layout(); plt.savefig(os.path.join(OUT, "study_tradeoffs.png"), dpi=120); plt.show()
+
+    safe, best = recommend(results)
+    print("Clinically safe variants (fastest first):")
+    print(safe[["onnx_mb", "auroc", "sensitivity", "fn", "cpu_latency_ms_1thread"]].round(4))
+    print(f"\nRecommended for the Pi (provisional): {best}")
+    """)
+
+    md("## 7. Save everything for the laptop / Pi benchmark")
+    code(r"""
+    deploy_config = {
+        "experiment": EXP,
+        "arch": C.ARCH,
+        "classes": C.CLASSES,
+        "positive_class_index": 1,
+        "img_size": C.IMG_SIZE,
+        "input": "RGB, resized to img_size x img_size (bilinear), float32 in [0,1], NCHW; normalization is inside the model",
+        "led_rule": "LED ON if softmax(logits / temperature)[1] >= led_threshold (per model)",
+        "target_sensitivity": C.TARGET_SENSITIVITY,
+        "recommended": best,
+        "models": models_cfg,
+        # backwards-compatible keys (used by older scripts)
+        "model_fp32": models_cfg["FP32"]["file"], "temperature_fp32": models_cfg["FP32"]["temperature"],
+        "model_int8": models_cfg["INT8 percentile"]["file"], "led_threshold": models_cfg["FP32"]["led_threshold"],
+    }
+    with open(os.path.join(DEPLOY, "deploy_config.json"), "w") as f:
+        json.dump(deploy_config, f, indent=2)
+
+    demo_dir = os.path.join(DEPLOY, "demo_images"); os.makedirs(demo_dir, exist_ok=True)
+    demo = pd.concat([parts["test"][parts["test"].label == l].sample(10, random_state=1) for l in (0, 1)])
+    for p in demo.path:
+        shutil.copy(os.path.join(DATA_ROOT, p), os.path.join(demo_dir, os.path.basename(p)))
+    demo.assign(file=demo.path.map(os.path.basename))[["file", "class", "label", "patient_id"]].to_csv(
+        os.path.join(demo_dir, "labels.csv"), index=False)
+
+    with open(os.path.join(OUT, "study_summary.json"), "w") as f:
+        json.dump({"experiment": EXP, "code_version": GIT_COMMIT, "system_training": SYS_TRAIN,
+                   "recommended": best, "results": results.reset_index().to_dict("records")}, f, indent=2, default=float)
+
+    zip_base = os.path.join("/kaggle/working" if ON_KAGGLE else WORK, "edai_" + EXP)
+    shutil.make_archive(zip_base, "zip", os.path.join(WORK, "outputs"))
+    print(f"Saved. Download {os.path.basename(zip_base)}.zip from the Output panel.")
+    """)
+
+
+def build_study(arch, filename, epochs=15):
+    cells.clear()
+    github_setup(STUDY_INTRO.format(arch=arch))
+    study_cells(arch, epochs)
     nb = nbf.v4.new_notebook()
     nb["cells"] = list(cells)
     nb["metadata"] = {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
@@ -413,5 +689,8 @@ def build(mode, filename):
 
 
 if __name__ == "__main__":
-    build("github", "edai_malaria_kaggle.ipynb")
-    build("standalone", "edai_malaria_kaggle_standalone.ipynb")
+    build("github", "edai_malaria_kaggle.ipynb", PRETRAINED_EXP)
+    build("github", "edai_malaria_kaggle_scratch.ipynb", SCRATCH_EXP)
+    build("standalone", "edai_malaria_kaggle_standalone.ipynb", PRETRAINED_EXP)
+    for arch in ("mobilenet_v3_small", "mobilenet_v2", "resnet18"):
+        build_study(arch, f"study_{arch}.ipynb")

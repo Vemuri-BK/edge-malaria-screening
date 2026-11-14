@@ -7,6 +7,7 @@ pillow
 scikit-learn
 matplotlib
 tqdm
+torch-pruning     # structured pruning (compression study)
 
 # Export + quantization
 onnx
