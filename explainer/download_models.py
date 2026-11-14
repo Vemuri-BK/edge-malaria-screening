@@ -6,6 +6,7 @@ Plans
   core : Qwen3-0.6B at 5 quantization levels  +  Llama-3.2-1B and Gemma-3-1B at Q4_K_M
          (~3.5 GB total)  -> answers both "how far can we quantize?" and "which model?"
   quick: Qwen3-0.6B Q4_K_M only (~0.5 GB) -> just to try the explainer
+  base : Qwen3-0.6B 16-bit original (~1.2 GB) -> input for our own quantization (quantize_llm.py)
 
 Files go to models/ (ignored by git). If a model needs a licence click-through on
 Hugging Face (e.g. Gemma), log in with `huggingface-cli login` first.
@@ -13,6 +14,7 @@ Hugging Face (e.g. Gemma), log in with `huggingface-cli login` first.
 Usage
   python explainer/download_models.py --plan quick
   python explainer/download_models.py --plan core
+  python explainer/download_models.py --plan base
 """
 import argparse
 from pathlib import Path
@@ -29,16 +31,20 @@ MODELS = {
 
 PLANS = {
     "quick": [("qwen3-0.6b", "Q4_K_M")],
+    "base": [("qwen3-0.6b", "BF16|F16")],      # 16-bit original, for our own quantization
     "core": [("qwen3-0.6b", q) for q in ("Q8_0", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K")]
             + [("llama3.2-1b", "Q4_K_M"), ("gemma3-1b", "Q4_K_M")],
 }
 
 
 def find_file(repo: str, quant: str) -> str:
-    files = [f for f in list_repo_files(repo) if f.lower().endswith(f"-{quant.lower()}.gguf")]
-    if not files:
-        raise FileNotFoundError(f"No *-{quant}.gguf in {repo}")
-    return sorted(files, key=len)[0]
+    """quant may list alternatives, e.g. 'BF16|F16' (first match wins)."""
+    all_files = list_repo_files(repo)
+    for q in quant.split("|"):
+        files = [f for f in all_files if f.lower().endswith(f"-{q.lower()}.gguf")]
+        if files:
+            return sorted(files, key=len)[0]
+    raise FileNotFoundError(f"No *-{quant}.gguf in {repo}")
 
 
 def main():

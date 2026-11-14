@@ -104,3 +104,14 @@ python explainer/benchmark_llm.py --models "models/*.gguf" --cases 40
 ```
 The benchmark writes `results/llm_benchmark_<device>.csv` (quality + speed + RAM + temperature per model)
 and `results/llm_outputs_<device>.jsonl` (every explanation, for examples in the report).
+
+### Our own LLM quantization (plain vs importance-aware)
+```
+python explainer/download_models.py --plan base          # 16-bit Qwen3-0.6B
+winget install llama.cpp                                  # Windows: llama-quantize + llama-imatrix
+python explainer/quantize_llm.py --base models/Qwen_Qwen3-0.6B-bf16.gguf
+python explainer/benchmark_llm.py --models "models/own/*.gguf" --cases 40
+```
+`quantize_llm.py` makes Q8_0 / Q5_K_M / Q4_K_M / Q3_K_M / Q2_K with plain rounding, and
+Q4_K_M / Q3_K_M / Q2_K with an importance matrix computed on task-like text (imatrix).
+On the Pi, build llama.cpp from source (`cmake -B build && cmake --build build -j4`) for the same tools.

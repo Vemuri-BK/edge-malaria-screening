@@ -6,6 +6,11 @@ using a small quantized LLM (GGUF file, run with llama.cpp via llama-cpp-python)
 
 Design (safety first)
 ---------------------
+* Two modes: "prompt" (the LLM must write the safety advice itself) and "hybrid"
+  (the LLM only states the finding + probability; the uncertainty note for borderline
+  cases and the safety sentence are appended by code).
+  Benchmarks showed tiny LLMs state the facts correctly but often DROP the safety
+  instructions, so "hybrid" is the deployment default.
 * The CNN makes the decision. The LLM only EXPLAINS the facts it is given.
 * Every LLM output goes through `check_explanation()`:
       correct      : states the same result as the CNN (parasites detected / not)
@@ -30,6 +35,18 @@ DEFAULT_THRESHOLD = 0.37          # LED threshold from the pretrained MobileNetV
 BORDERLINE_MARGIN = 0.15          # |p - threshold| below this = borderline case
 MAX_WORDS = 90
 
+# Mode "hybrid": the LLM only explains the finding; the safety sentence is added by code.
+SAFETY_SUFFIX = "This is a screening result, not a diagnosis; a lab technician or doctor must confirm it."
+BORDERLINE_SENTENCE = "The result is close to the decision threshold, so it is uncertain."
+HYBRID_PROMPT = (
+    "You explain results from an automated malaria screening device to a health worker. "
+    "Use only the facts given. Write 1 or 2 short, simple sentences that state whether malaria parasites "
+    "were detected and the probability of parasites. Do not comment on how certain or borderline the result is. "
+    "Do not suggest treatment or medicines. Do not add any other numbers. "
+    "Reply with the explanation only, in normal sentences, without copying the labels."
+)
+
+# Mode "prompt": the LLM must produce everything, including the safety advice.
 SYSTEM_PROMPT = (
     "You explain results from an automated malaria screening device to a health worker. "
     "Use only the facts given. Write 2 or 3 short, simple sentences. "
@@ -37,7 +54,7 @@ SYSTEM_PROMPT = (
     "Say it is a screening result, not a diagnosis, and that a lab technician or doctor must confirm it. "
     "If the case is borderline, say the result is uncertain. "
     "Do not suggest treatment or medicines. Do not add any other numbers. "
-    "Write normal sentences; do not copy the labels or capital letters from the facts."
+    "Write normal sentences; do not copy the labels or capital letters from the facts. Reply with the explanation only."
 )
 
 
@@ -134,8 +151,10 @@ def check_explanation(text: str, f: dict) -> dict:
         "mentions_uncertainty": bool(UNCERTAIN_RE.search(text)),
         "words": words,
     }
+    # calling a confident case "uncertain" is misleading
+    r["no_false_uncertainty"] = f["borderline"] or not r["mentions_uncertainty"]
     r["passed"] = (r["correct"] and r["numbers_ok"] and r["no_forbidden"] and r["referral"]
-                   and r["says_screening"] and r["length_ok"])
+                   and r["says_screening"] and r["length_ok"] and r["no_false_uncertainty"])
     return r
 
 
@@ -149,7 +168,15 @@ class Explainer:
     """
 
     def __init__(self, model_path=None, n_ctx: int = 512, n_threads: int = 4,
-                 max_tokens: int = 96, temperature: float = 0.2, seed: int = 42):
+                 max_tokens: int = 96, temperature: float = 0.0, seed: int = 42,
+                 mode: str = "hybrid", use_mmap: bool = True):
+        """
+        mode = "hybrid": LLM explains the finding, code appends SAFETY_SUFFIX (recommended)
+        mode = "prompt": LLM must write the safety advice itself (baseline for comparison)
+        use_mmap=False loads the whole model into RAM (honest RAM measurement in benchmarks)
+        """
+        assert mode in ("hybrid", "prompt")
+        self.mode = mode
         self.model_path = model_path
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -160,7 +187,7 @@ class Explainer:
             from llama_cpp import Llama
             t0 = time.perf_counter()
             self.llm = Llama(model_path=str(model_path), n_ctx=n_ctx, n_threads=n_threads,
-                             seed=seed, verbose=False)
+                             seed=seed, use_mmap=use_mmap, verbose=False)
             self.load_s = time.perf_counter() - t0
         self.is_qwen3 = bool(model_path) and "qwen3" in str(model_path).lower()
 
@@ -170,7 +197,7 @@ class Explainer:
         t0 = time.perf_counter()
         ttft, chunks = None, []
         stream = self.llm.create_chat_completion(
-            messages=[{"role": "system", "content": SYSTEM_PROMPT},
+            messages=[{"role": "system", "content": HYBRID_PROMPT if self.mode == "hybrid" else SYSTEM_PROMPT},
                       {"role": "user", "content": user}],
             max_tokens=self.max_tokens, temperature=self.temperature, seed=self.seed, stream=True)
         for ch in stream:
@@ -191,6 +218,9 @@ class Explainer:
 
         raw, ttft, total, n_tok = self._generate(facts_to_prompt(f))
         text = clean_output(raw)
+        if self.mode == "hybrid":
+            # facts from the LLM; uncertainty + safety advice added deterministically by code
+            text = f"{text} {BORDERLINE_SENTENCE + ' ' if f['borderline'] else ''}{SAFETY_SUFFIX}"
         checks = check_explanation(text, f)
         out.update(llm_text=text, ttft_s=ttft, total_s=total, n_tokens=n_tok, checks=checks)
         if checks["passed"]:
@@ -208,9 +238,10 @@ def main():
     ap.add_argument("--prob", type=float, default=0.97, help="P(Parasitized) from the CNN")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--mode", choices=["hybrid", "prompt"], default="hybrid")
     args = ap.parse_args()
 
-    ex = Explainer(None if args.template_only else args.model, n_threads=args.threads)
+    ex = Explainer(None if args.template_only else args.model, n_threads=args.threads, mode=args.mode)
     r = ex.explain(args.prob, args.threshold)
     print(f"\n{r['text']}\n")
     print(f"source: {r['source']}")
